@@ -9,6 +9,11 @@ from ops.testing import Harness
 from charm import PostgresqlOperatorCharm
 from constants import PEER
 
+ANOTHER_CLUSTER_REPOSITORY_ERROR_MESSAGE = "the S3 repository has backups from another cluster"
+FAILED_TO_ACCESS_CREATE_BUCKET_ERROR_MESSAGE = (
+    "failed to access/create the bucket, check your S3 settings"
+)
+FAILED_TO_INITIALIZE_STANZA_ERROR_MESSAGE = "failed to initialize stanza, check your S3 settings"
 S3_PARAMETERS_RELATION = "s3-parameters"
 
 
@@ -133,6 +138,104 @@ class TestPostgreSQLBackups(unittest.TestCase):
         self.assertEqual(
             self.charm.backup._can_unit_perform_backup(),
             (True, None),
+        )
+
+    @patch("charm.Patroni.reload_patroni_configuration")
+    @patch("charm.Patroni.member_started", new_callable=PropertyMock)
+    @patch("charm.PostgresqlOperatorCharm.update_config")
+    @patch("charm.PostgreSQLBackups._execute_command")
+    def test_can_use_s3_repository(
+        self, _execute_command, _update_config, _member_started, _reload_patroni_configuration
+    ):
+        # Define the stanza name inside the unit relation data.
+        with self.harness.hooks_disabled():
+            self.harness.update_relation_data(
+                self.peer_rel_id,
+                self.charm.app.name,
+                {"stanza": self.charm.backup.stanza_name},
+            )
+
+        # Test when nothing is returned from the pgBackRest info command.
+        _execute_command.return_value = (None, None)
+        self.assertEqual(
+            self.charm.backup.can_use_s3_repository(),
+            (False, FAILED_TO_INITIALIZE_STANZA_ERROR_MESSAGE),
+        )
+
+        # Test when the unit is a replica and there is a backup from another cluster
+        # in the S3 repository.
+        _execute_command.return_value = (
+            f'[{{"name": "another-model.{self.charm.cluster_name}"}}]',
+            None,
+        )
+        self.assertEqual(
+            self.charm.backup.can_use_s3_repository(),
+            (True, None),
+        )
+
+        # Assert that the stanza name is still in the unit relation data.
+        self.assertEqual(
+            self.harness.get_relation_data(self.peer_rel_id, self.charm.app),
+            {"stanza": self.charm.backup.stanza_name},
+        )
+
+        # Test when the unit is the leader and the workload is running.
+        _member_started.return_value = True
+        with self.harness.hooks_disabled():
+            self.harness.set_leader()
+        self.assertEqual(
+            self.charm.backup.can_use_s3_repository(),
+            (False, ANOTHER_CLUSTER_REPOSITORY_ERROR_MESSAGE),
+        )
+        _update_config.assert_called_once()
+        _member_started.assert_called_once()
+        _reload_patroni_configuration.assert_called_once()
+
+        # Assert that the stanza name is not present in the unit relation data anymore.
+        self.assertEqual(self.harness.get_relation_data(self.peer_rel_id, self.charm.app), {})
+
+        # Test when the workload is not running.
+        _update_config.reset_mock()
+        _member_started.reset_mock()
+        _reload_patroni_configuration.reset_mock()
+        _member_started.return_value = False
+        with self.harness.hooks_disabled():
+            self.harness.update_relation_data(
+                self.peer_rel_id,
+                self.charm.app.name,
+                {"stanza": self.charm.backup.stanza_name},
+            )
+        self.assertEqual(
+            self.charm.backup.can_use_s3_repository(),
+            (False, ANOTHER_CLUSTER_REPOSITORY_ERROR_MESSAGE),
+        )
+        _update_config.assert_called_once()
+        _member_started.assert_called_once()
+        _reload_patroni_configuration.assert_not_called()
+
+        # Assert that the stanza name is not present in the unit relation data anymore.
+        self.assertEqual(self.harness.get_relation_data(self.peer_rel_id, self.charm.app), {})
+
+        # Test when there is no backup from another cluster in the S3 repository.
+        with self.harness.hooks_disabled():
+            self.harness.update_relation_data(
+                self.peer_rel_id,
+                self.charm.app.name,
+                {"stanza": self.charm.backup.stanza_name},
+            )
+        _execute_command.return_value = (
+            f'[{{"name": "{self.charm.backup.stanza_name}"}}]',
+            None,
+        )
+        self.assertEqual(
+            self.charm.backup.can_use_s3_repository(),
+            (True, None),
+        )
+
+        # Assert that the stanza name is still in the unit relation data.
+        self.assertEqual(
+            self.harness.get_relation_data(self.peer_rel_id, self.charm.app),
+            {"stanza": self.charm.backup.stanza_name},
         )
 
     def test_construct_endpoint(self):
