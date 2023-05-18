@@ -3,6 +3,7 @@
 import unittest
 from unittest.mock import PropertyMock, patch
 
+from botocore.exceptions import ClientError
 from ops import ActiveStatus, BlockedStatus
 from ops.testing import Harness
 
@@ -257,6 +258,64 @@ class TestPostgreSQLBackups(unittest.TestCase):
         self.assertEqual(
             self.charm.backup._construct_endpoint(s3_parameters), "https://storage.googleapis.com"
         )
+
+    @patch("boto3.session.Session.resource")
+    @patch("charm.PostgreSQLBackups._retrieve_s3_parameters")
+    def test_create_bucket_if_not_exists(self, _retrieve_s3_parameters, _resource):
+        # Test when there are missing S3 parameters.
+        _retrieve_s3_parameters.return_value = ([], ["bucket", "access-key", "secret-key"])
+        self.charm.backup._create_bucket_if_not_exists()
+        _resource.assert_not_called()
+
+        # Test when the charm fails to create a boto3 session.
+        _retrieve_s3_parameters.return_value = (
+            {
+                "bucket": "test-bucket",
+                "access-key": "test-access-key",
+                "secret-key": "test-secret-key",
+                "endpoint": "test-endpoint",
+                "region": "test-region",
+            },
+            [],
+        )
+        _resource.side_effect = ValueError
+        with self.assertRaises(ValueError):
+            self.charm.backup._create_bucket_if_not_exists()
+
+        # Test when the bucket already exists.
+        _resource.side_effect = None
+        head_bucket = _resource.return_value.Bucket.return_value.meta.client.head_bucket
+        create = _resource.return_value.Bucket.return_value.create
+        wait_until_exists = _resource.return_value.Bucket.return_value.wait_until_exists
+        self.charm.backup._create_bucket_if_not_exists()
+        head_bucket.assert_called_once()
+        create.assert_not_called()
+        wait_until_exists.assert_not_called()
+
+        # Test when the bucket doesn't exist.
+        head_bucket.reset_mock()
+        head_bucket.side_effect = ClientError(
+            error_response={"Error": {"Code": 1, "message": "fake error"}},
+            operation_name="fake operation name",
+        )
+        self.charm.backup._create_bucket_if_not_exists()
+        head_bucket.assert_called_once()
+        create.assert_called_once()
+        wait_until_exists.assert_called_once()
+
+        # Test when the bucket creation fails.
+        head_bucket.reset_mock()
+        create.reset_mock()
+        wait_until_exists.reset_mock()
+        create.side_effect = ClientError(
+            error_response={"Error": {"Code": 1, "message": "fake error"}},
+            operation_name="fake operation name",
+        )
+        with self.assertRaises(ClientError):
+            self.charm.backup._create_bucket_if_not_exists()
+        head_bucket.assert_called_once()
+        create.assert_called_once()
+        wait_until_exists.assert_not_called()
 
     def test_empty_data_files(self):
         pass
