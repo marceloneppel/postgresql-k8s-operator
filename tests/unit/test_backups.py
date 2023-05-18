@@ -239,7 +239,24 @@ class TestPostgreSQLBackups(unittest.TestCase):
         )
 
     def test_construct_endpoint(self):
-        pass
+        # Test with an AWS endpoint without region.
+        s3_parameters = {"endpoint": "https://s3.amazonaws.com", "region": ""}
+        self.assertEqual(
+            self.charm.backup._construct_endpoint(s3_parameters), "https://s3.amazonaws.com"
+        )
+
+        # Test with an AWS endpoint with region.
+        s3_parameters["region"] = "us-east-1"
+        self.assertEqual(
+            self.charm.backup._construct_endpoint(s3_parameters),
+            "https://s3.us-east-1.amazonaws.com",
+        )
+
+        # Test with another cloud endpoint.
+        s3_parameters["endpoint"] = "https://storage.googleapis.com"
+        self.assertEqual(
+            self.charm.backup._construct_endpoint(s3_parameters), "https://storage.googleapis.com"
+        )
 
     def test_empty_data_files(self):
         pass
