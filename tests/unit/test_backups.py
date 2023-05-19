@@ -3,7 +3,7 @@
 import datetime
 import unittest
 from typing import OrderedDict
-from unittest.mock import PropertyMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from botocore.exceptions import ClientError
 from ops import ActiveStatus, BlockedStatus
@@ -676,8 +676,48 @@ class TestPostgreSQLBackups(unittest.TestCase):
     def test_on_create_backup_action(self):
         pass
 
-    def test_on_list_backups_action(self):
-        pass
+    @patch("charm.PostgreSQLBackups._generate_backup_list_output")
+    @patch("charm.PostgreSQLBackups._are_backup_settings_ok")
+    def test_on_list_backups_action(self, _are_backup_settings_ok, _generate_backup_list_output):
+        # Test when not all backup settings are ok.
+        mock_event = MagicMock()
+        _are_backup_settings_ok.return_value = (False, "fake validation message")
+        self.charm.backup._on_list_backups_action(mock_event)
+        mock_event.fail.assert_called_once()
+        _generate_backup_list_output.assert_not_called()
+        mock_event.set_results.assert_not_called()
+
+        # Test when the charm fails to generate the backup list output.
+        mock_event.reset_mock()
+        _are_backup_settings_ok.return_value = (True, None)
+        _generate_backup_list_output.side_effect = ExecError(
+            command="fake command".split(), exit_code=1, stdout="", stderr="fake error"
+        )
+        self.charm.backup._on_list_backups_action(mock_event)
+        _generate_backup_list_output.assert_called_once()
+        mock_event.fail.assert_called_once()
+        mock_event.set_results.assert_not_called()
+
+        # Test when the charm succeeds on generating the backup list output.
+        mock_event.reset_mock()
+        _generate_backup_list_output.reset_mock()
+        _are_backup_settings_ok.return_value = (True, None)
+        _generate_backup_list_output.side_effect = None
+        _generate_backup_list_output.return_value = """backup-id             | backup-type  | backup-status
+----------------------------------------------------
+2023-01-01T09:00:00Z  | physical     | failed: fake error
+2023-01-01T10:00:00Z  | physical     | finished"""
+        self.charm.backup._on_list_backups_action(mock_event)
+        _generate_backup_list_output.assert_called_once()
+        mock_event.set_results.assert_called_once_with(
+            {
+                "backups": """backup-id             | backup-type  | backup-status
+----------------------------------------------------
+2023-01-01T09:00:00Z  | physical     | failed: fake error
+2023-01-01T10:00:00Z  | physical     | finished"""
+            }
+        )
+        mock_event.fail.assert_not_called()
 
     def test_on_restore_action(self):
         pass
