@@ -9,7 +9,7 @@ from botocore.exceptions import ClientError
 from ops import ActiveStatus, BlockedStatus
 from ops.pebble import Change, ChangeError, ChangeID, ExecError
 from ops.testing import Harness
-from tenacity import wait_fixed
+from tenacity import RetryError, wait_fixed
 
 from charm import PostgresqlOperatorCharm
 from constants import PEER
@@ -544,8 +544,30 @@ class TestPostgreSQLBackups(unittest.TestCase):
         _reload_patroni_configuration.assert_called_once()
         self.assertIsInstance(self.charm.unit.status, ActiveStatus)
 
-    def test_is_primary_pgbackrest_service_running(self):
-        pass
+    @patch("charm.PostgreSQLBackups._execute_command")
+    @patch("charm.PostgresqlOperatorCharm._get_hostname_from_unit")
+    @patch("charm.Patroni.get_primary")
+    def test_is_primary_pgbackrest_service_running(
+        self, _get_primary, _get_hostname_from_unit, _execute_command
+    ):
+        # Test when the charm fails to get the current primary.
+        _get_primary.side_effect = RetryError(last_attempt=1)
+        self.assertEqual(self.charm.backup._is_primary_pgbackrest_service_running, False)
+        _execute_command.assert_not_called()
+
+        # Test when the pgBackRest fails to contact the primary server.
+        _get_primary.side_effect = None
+        _execute_command.side_effect = ExecError(
+            command="fake command".split(), exit_code=1, stdout="", stderr="fake error"
+        )
+        self.assertEqual(self.charm.backup._is_primary_pgbackrest_service_running, False)
+        _execute_command.assert_called_once()
+
+        # Test when the pgBackRest succeeds on contacting the primary server.
+        _execute_command.reset_mock()
+        _execute_command.side_effect = None
+        self.assertEqual(self.charm.backup._is_primary_pgbackrest_service_running, True)
+        _execute_command.assert_called_once()
 
     def test_on_s3_credential_changed(self):
         pass
