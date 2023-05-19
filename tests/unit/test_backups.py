@@ -5,6 +5,7 @@ from unittest.mock import PropertyMock, patch
 
 from botocore.exceptions import ClientError
 from ops import ActiveStatus, BlockedStatus
+from ops.pebble import ExecError
 from ops.testing import Harness
 
 from charm import PostgresqlOperatorCharm
@@ -317,20 +318,106 @@ class TestPostgreSQLBackups(unittest.TestCase):
         create.assert_called_once()
         wait_until_exists.assert_not_called()
 
-    def test_empty_data_files(self):
-        pass
+    @patch("ops.model.Container.exec")
+    def test_empty_data_files(self, _exec):
+        # Test when the removal of the data files fails.
+        command = "rm -r /var/lib/postgresql/data/pgdata".split()
+        _exec.side_effect = ExecError(command=command, exit_code=1, stdout="", stderr="fake error")
+        with self.assertRaises(ExecError):
+            self.charm.backup._empty_data_files()
+        _exec.assert_called_once_with(command, user="postgres", group="postgres")
 
-    def test_change_connectivity_to_database(self):
-        pass
+        # Test when data files are successfully removed.
+        _exec.reset_mock()
+        _exec.side_effect = None
+        self.charm.backup._empty_data_files()
+        _exec.assert_called_once_with(command, user="postgres", group="postgres")
 
-    def test_execute_command(self):
-        pass
+    @patch("charm.PostgresqlOperatorCharm.update_config")
+    def test_change_connectivity_to_database(self, _update_config):
+        # Ensure that there is no connectivity info in the unit relation databag.
+        with self.harness.hooks_disabled():
+            self.harness.update_relation_data(
+                self.peer_rel_id,
+                self.charm.unit.name,
+                {"connectivity": ""},
+            )
+
+        # Test when connectivity should be turned on.
+        self.charm.backup._change_connectivity_to_database(True)
+        self.assertEqual(
+            self.harness.get_relation_data(self.peer_rel_id, self.charm.unit),
+            {"connectivity": "on"},
+        )
+        _update_config.assert_called_once()
+
+        # Test when connectivity should be turned off.
+        _update_config.reset_mock()
+        self.charm.backup._change_connectivity_to_database(False)
+        self.assertEqual(
+            self.harness.get_relation_data(self.peer_rel_id, self.charm.unit),
+            {"connectivity": "off"},
+        )
+        _update_config.assert_called_once()
+
+    @patch("ops.model.Container.exec")
+    def test_execute_command(self, _exec):
+        # Test when the command fails.
+        command = "rm -r /var/lib/postgresql/data/pgdata".split()
+        _exec.side_effect = ExecError(command=command, exit_code=1, stdout="", stderr="fake error")
+        with self.assertRaises(ExecError):
+            self.charm.backup._execute_command(command)
+        _exec.assert_called_once_with(command, user="postgres", group="postgres", timeout=None)
+
+        # Test when the command runs successfully.
+        _exec.reset_mock()
+        _exec.side_effect = None
+        self.charm.backup._execute_command(command, timeout=5)
+        _exec.assert_called_once_with(command, user="postgres", group="postgres", timeout=5)
 
     def test_format_backup_list(self):
-        pass
+        # Test when there are no backups.
+        self.assertEqual(
+            self.charm.backup._format_backup_list([]),
+            """backup-id             | backup-type  | backup-status
+----------------------------------------------------""",
+        )
 
-    def test_generate_backup_list_output(self):
-        pass
+        # Test when there are backups.
+        backup_list = [
+            ("2023-01-01T09:00:00Z", "physical", "failed: fake error"),
+            ("2023-01-01T10:00:00Z", "physical", "finished"),
+        ]
+        self.assertEqual(
+            self.charm.backup._format_backup_list(backup_list),
+            """backup-id             | backup-type  | backup-status
+----------------------------------------------------
+2023-01-01T09:00:00Z  | physical     | failed: fake error
+2023-01-01T10:00:00Z  | physical     | finished""",
+        )
+
+    @patch("charm.PostgreSQLBackups._execute_command")
+    def test_generate_backup_list_output(self, _execute_command):
+        # Test when no backups are returned.
+        _execute_command.return_value = ('[{"backup":[]}]', None)
+        self.assertEqual(
+            self.charm.backup._generate_backup_list_output(),
+            """backup-id             | backup-type  | backup-status
+----------------------------------------------------""",
+        )
+
+        # Test when backups are returned.
+        _execute_command.return_value = (
+            '[{"backup":[{"label":"20230101-090000F","error":"fake error"},{"label":"20230101-100000F","error":null}]}]',
+            None,
+        )
+        self.assertEqual(
+            self.charm.backup._generate_backup_list_output(),
+            """backup-id             | backup-type  | backup-status
+----------------------------------------------------
+2023-01-01T09:00:00Z  | physical     | failed: fake error
+2023-01-01T10:00:00Z  | physical     | finished""",
+        )
 
     def test_list_backups(self):
         pass
@@ -341,10 +428,7 @@ class TestPostgreSQLBackups(unittest.TestCase):
     def test_is_primary_pgbackrest_service_running(self):
         pass
 
-    def test_on_backup_s3_credential_changed(self):
-        pass
-
-    def test_on_restore_s3_credential_changed(self):
+    def test_on_s3_credential_changed(self):
         pass
 
     def test_on_create_backup_action(self):
