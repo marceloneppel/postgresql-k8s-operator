@@ -775,8 +775,22 @@ class TestPostgreSQLBackups(unittest.TestCase):
     def test_render_pgbackrest_conf_file(self):
         pass
 
-    def test_restart_database(self):
-        pass
+    @patch("ops.model.Container.start")
+    @patch("charm.PostgresqlOperatorCharm.update_config")
+    def test_restart_database(self, _update_config, _start):
+        with self.harness.hooks_disabled():
+            self.harness.update_relation_data(
+                self.peer_rel_id,
+                self.charm.unit.name,
+                {"restoring-backup": "2023-01-01T09:00:00Z"},
+            )
+        self.charm.backup._restart_database()
+
+        # Assert that the backup id is not in the application relation databag anymore.
+        self.assertEqual(self.harness.get_relation_data(self.peer_rel_id, self.charm.app), {})
+
+        _update_config.assert_called_once()
+        _start.assert_called_once_with("postgresql")
 
     def test_retrieve_s3_parameters(self):
         pass
