@@ -1,12 +1,13 @@
 # Copyright 2023 Canonical Ltd.
 # See LICENSE file for licensing details.
+import datetime
 import unittest
 from typing import OrderedDict
 from unittest.mock import PropertyMock, patch
 
 from botocore.exceptions import ClientError
 from ops import ActiveStatus, BlockedStatus
-from ops.pebble import ExecError
+from ops.pebble import Change, ChangeError, ChangeID, ExecError
 from ops.testing import Harness
 
 from charm import PostgresqlOperatorCharm
@@ -365,15 +366,30 @@ class TestPostgreSQLBackups(unittest.TestCase):
     def test_execute_command(self, _exec):
         # Test when the command fails.
         command = "rm -r /var/lib/postgresql/data/pgdata".split()
-        _exec.side_effect = ExecError(command=command, exit_code=1, stdout="", stderr="fake error")
-        with self.assertRaises(ExecError):
-            self.charm.backup._execute_command(command)
+        _exec.side_effect = ChangeError(
+            err="fake error",
+            change=Change(
+                ChangeID("1"),
+                "fake king",
+                "fake summary",
+                "fake status",
+                [],
+                True,
+                "fake error",
+                datetime.datetime.now(),
+                datetime.datetime.now(),
+            ),
+        )
+        _exec.return_value.wait_output.return_value = ("fake stdout", "")
+        self.assertEqual(self.charm.backup._execute_command(command), (None, None))
         _exec.assert_called_once_with(command, user="postgres", group="postgres", timeout=None)
 
         # Test when the command runs successfully.
         _exec.reset_mock()
         _exec.side_effect = None
-        self.charm.backup._execute_command(command, timeout=5)
+        self.assertEqual(
+            self.charm.backup._execute_command(command, timeout=5), ("fake stdout", "")
+        )
         _exec.assert_called_once_with(command, user="postgres", group="postgres", timeout=5)
 
     def test_format_backup_list(self):
