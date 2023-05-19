@@ -1,6 +1,7 @@
 # Copyright 2023 Canonical Ltd.
 # See LICENSE file for licensing details.
 import unittest
+from typing import OrderedDict
 from unittest.mock import PropertyMock, patch
 
 from botocore.exceptions import ClientError
@@ -419,8 +420,31 @@ class TestPostgreSQLBackups(unittest.TestCase):
 2023-01-01T10:00:00Z  | physical     | finished""",
         )
 
-    def test_list_backups(self):
-        pass
+    @patch("charm.PostgreSQLBackups._execute_command")
+    def test_list_backups(self, _execute_command):
+        # Test when no backups are available.
+        _execute_command.return_value = ("[]", None)
+        self.assertEqual(
+            self.charm.backup._list_backups(show_failed=True), OrderedDict[str, str]()
+        )
+
+        # Test when some backups are available.
+        _execute_command.return_value = (
+            '[{"backup":[{"label":"20230101-090000F","error":"fake error"},{"label":"20230101-100000F","error":null}],"name":"test-stanza"}]',
+            None,
+        )
+        self.assertEqual(
+            self.charm.backup._list_backups(show_failed=True),
+            OrderedDict[str, str](
+                [("2023-01-01T09:00:00Z", "test-stanza"), ("2023-01-01T10:00:00Z", "test-stanza")]
+            ),
+        )
+
+        # Test when some backups are available, but it's not desired to list failed backups.
+        self.assertEqual(
+            self.charm.backup._list_backups(show_failed=False),
+            OrderedDict[str, str]([("2023-01-01T10:00:00Z", "test-stanza")]),
+        )
 
     def test_initialise_stanza(self):
         pass
