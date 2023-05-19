@@ -722,8 +722,55 @@ class TestPostgreSQLBackups(unittest.TestCase):
     def test_on_restore_action(self):
         pass
 
-    def test_pre_restore_checks(self):
-        pass
+    @patch("ops.model.Application.planned_units")
+    @patch("charm.PostgreSQLBackups._are_backup_settings_ok")
+    def test_pre_restore_checks(self, _are_backup_settings_ok, _planned_units):
+        # Test when S3 parameters are not ok.
+        mock_event = MagicMock()
+        _are_backup_settings_ok.return_value = (False, "fake error message")
+        self.assertEqual(self.charm.backup._pre_restore_checks(mock_event), False)
+        mock_event.fail.assert_called_once()
+
+        # Test when no backup id is provided.
+        mock_event.reset_mock()
+        _are_backup_settings_ok.return_value = (True, None)
+        self.assertEqual(self.charm.backup._pre_restore_checks(mock_event), False)
+        mock_event.fail.assert_called_once()
+
+        # Test when the workload container is not accessible yet.
+        mock_event.reset_mock()
+        mock_event.params = {"backup-id": "2023-01-01T09:00:00Z"}
+        self.assertEqual(self.charm.backup._pre_restore_checks(mock_event), False)
+        mock_event.fail.assert_called_once()
+
+        # Test when the unit is in a blocked state that is not recoverable by changing
+        # S3 parameters.
+        mock_event.reset_mock()
+        self.harness.set_can_connect("postgresql", True)
+        self.charm.unit.status = BlockedStatus("fake blocked state")
+        self.assertEqual(self.charm.backup._pre_restore_checks(mock_event), False)
+        mock_event.fail.assert_called_once()
+
+        # Test when the unit is in a blocked state that is recoverable by changing S3 parameters,
+        # but the cluster has more than one unit.
+        mock_event.reset_mock()
+        self.charm.unit.status = BlockedStatus(ANOTHER_CLUSTER_REPOSITORY_ERROR_MESSAGE)
+        _planned_units.return_value = 2
+        self.assertEqual(self.charm.backup._pre_restore_checks(mock_event), False)
+        mock_event.fail.assert_called_once()
+
+        # Test when the cluster has only one unit, but it's not the leader yet.
+        mock_event.reset_mock()
+        _planned_units.return_value = 1
+        self.assertEqual(self.charm.backup._pre_restore_checks(mock_event), False)
+        mock_event.fail.assert_called_once()
+
+        # Test when everything is ok to run a restore.
+        mock_event.reset_mock()
+        with self.harness.hooks_disabled():
+            self.harness.set_leader()
+        self.assertEqual(self.charm.backup._pre_restore_checks(mock_event), True)
+        mock_event.fail.assert_not_called()
 
     def test_render_pgbackrest_conf_file(self):
         pass
