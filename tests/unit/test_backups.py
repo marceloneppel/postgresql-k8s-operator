@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from ops import ActiveStatus, BlockedStatus
 from ops.pebble import Change, ChangeError, ChangeID, ExecError
 from ops.testing import Harness
+from tenacity import wait_fixed
 
 from charm import PostgresqlOperatorCharm
 from constants import PEER
@@ -462,8 +463,86 @@ class TestPostgreSQLBackups(unittest.TestCase):
             OrderedDict[str, str]([("2023-01-01T10:00:00Z", "test-stanza")]),
         )
 
-    def test_initialise_stanza(self):
-        pass
+    @patch("charm.Patroni.reload_patroni_configuration")
+    @patch("charm.Patroni.member_started", new_callable=PropertyMock)
+    @patch("backups.wait_fixed", return_value=wait_fixed(0))
+    @patch("charm.PostgresqlOperatorCharm.update_config")
+    @patch("charm.PostgreSQLBackups._execute_command")
+    def test_initialise_stanza(
+        self, _execute_command, _update_config, _, _member_started, _reload_patroni_configuration
+    ):
+        # Test when the unit is not the leader.
+        self.charm.backup._initialise_stanza()
+        _execute_command.assert_not_called()
+
+        # Test when the unit is the leader, but it's in a blocked state
+        # other than the ones can be solved by new S3 settings.
+        with self.harness.hooks_disabled():
+            self.harness.set_leader()
+        self.charm.unit.status = BlockedStatus("fake blocked state")
+        self.charm.backup._initialise_stanza()
+        _execute_command.assert_not_called()
+
+        # Test when the blocked state is any of the blocked stated that can be solved
+        # by new S3 settings, but the stanza creation fails.
+        stanza_creation_command = [
+            "pgbackrest",
+            f"--stanza={self.charm.backup.stanza_name}",
+            "stanza-create",
+        ]
+        _execute_command.side_effect = ExecError(
+            command=stanza_creation_command, exit_code=1, stdout="", stderr="fake error"
+        )
+        for blocked_state in [
+            ANOTHER_CLUSTER_REPOSITORY_ERROR_MESSAGE,
+            FAILED_TO_ACCESS_CREATE_BUCKET_ERROR_MESSAGE,
+            FAILED_TO_INITIALIZE_STANZA_ERROR_MESSAGE,
+        ]:
+            _execute_command.reset_mock()
+            self.charm.unit.status = BlockedStatus(blocked_state)
+            self.charm.backup._initialise_stanza()
+            _execute_command.assert_called_once_with(stanza_creation_command)
+            self.assertIsInstance(self.charm.unit.status, BlockedStatus)
+            self.assertEqual(
+                self.charm.unit.status.message, FAILED_TO_INITIALIZE_STANZA_ERROR_MESSAGE
+            )
+
+            # Assert there is no stanza name in the application relation databag.
+            self.assertEqual(self.harness.get_relation_data(self.peer_rel_id, self.charm.app), {})
+
+        # Test when the stanza creation succeeds, but the archiving is not working correctly
+        # (pgBackRest check command fails).
+        _execute_command.reset_mock()
+        _execute_command.side_effect = [
+            None,
+            ExecError(
+                command=stanza_creation_command, exit_code=1, stdout="", stderr="fake error"
+            ),
+        ]
+        _member_started.return_value = True
+        self.charm.backup._initialise_stanza()
+        self.assertEqual(_update_config.call_count, 2)
+        self.assertEqual(self.harness.get_relation_data(self.peer_rel_id, self.charm.app), {})
+        self.assertEqual(_member_started.call_count, 5)
+        self.assertEqual(_reload_patroni_configuration.call_count, 5)
+        self.assertIsInstance(self.charm.unit.status, BlockedStatus)
+        self.assertEqual(self.charm.unit.status.message, FAILED_TO_INITIALIZE_STANZA_ERROR_MESSAGE)
+
+        # Test when the archiving is working correctly (pgBackRest check command succeeds).
+        _execute_command.reset_mock()
+        _update_config.reset_mock()
+        _member_started.reset_mock()
+        _reload_patroni_configuration.reset_mock()
+        _execute_command.side_effect = None
+        self.charm.backup._initialise_stanza()
+        self.assertEqual(
+            self.harness.get_relation_data(self.peer_rel_id, self.charm.app),
+            {"stanza": self.charm.backup.stanza_name},
+        )
+        _update_config.assert_called_once()
+        _member_started.assert_called_once()
+        _reload_patroni_configuration.assert_called_once()
+        self.assertIsInstance(self.charm.unit.status, ActiveStatus)
 
     def test_is_primary_pgbackrest_service_running(self):
         pass
