@@ -569,8 +569,109 @@ class TestPostgreSQLBackups(unittest.TestCase):
         self.assertEqual(self.charm.backup._is_primary_pgbackrest_service_running, True)
         _execute_command.assert_called_once()
 
-    def test_on_s3_credential_changed(self):
-        pass
+    @patch("charm.PostgreSQLBackups.start_stop_pgbackrest_service")
+    @patch("charm.PostgreSQLBackups._initialise_stanza")
+    @patch("charm.PostgreSQLBackups.can_use_s3_repository")
+    @patch("charm.PostgreSQLBackups._create_bucket_if_not_exists")
+    @patch("charm.PostgreSQLBackups._render_pgbackrest_conf_file")
+    @patch("ops.framework.EventBase.defer")
+    def test_on_s3_credential_changed(
+        self,
+        _defer,
+        _render_pgbackrest_conf_file,
+        _create_bucket_if_not_exists,
+        _can_use_s3_repository,
+        _initialise_stanza,
+        _start_stop_pgbackrest_service,
+    ):
+        # Test when the cluster was not initialised yet.
+        self.relate_to_s3_integrator()
+        self.charm.backup.s3_client.on.credentials_changed.emit(
+            relation=self.harness.model.get_relation(S3_PARAMETERS_RELATION, self.s3_rel_id)
+        )
+        _defer.assert_called_once()
+        _render_pgbackrest_conf_file.assert_not_called()
+        _create_bucket_if_not_exists.assert_not_called()
+        _can_use_s3_repository.assert_not_called()
+        _initialise_stanza.assert_not_called()
+        _start_stop_pgbackrest_service.assert_not_called()
+
+        # Test when the cluster is already initialised, but the charm fails to render
+        # the pgBackRest configuration file due to missing S3 parameters.
+        _defer.reset_mock()
+        with self.harness.hooks_disabled():
+            self.harness.update_relation_data(
+                self.peer_rel_id,
+                self.charm.app.name,
+                {"cluster_initialised": "True"},
+            )
+        _render_pgbackrest_conf_file.return_value = False
+        self.charm.backup.s3_client.on.credentials_changed.emit(
+            relation=self.harness.model.get_relation(S3_PARAMETERS_RELATION, self.s3_rel_id)
+        )
+        _defer.assert_not_called()
+        _render_pgbackrest_conf_file.assert_called_once()
+        _create_bucket_if_not_exists.assert_not_called()
+        _can_use_s3_repository.assert_not_called()
+        _initialise_stanza.assert_not_called()
+        _start_stop_pgbackrest_service.assert_not_called()
+
+        # Test when the charm render the pgBackRest configuration file, but fails to
+        # access or create the S3 bucket.
+        for error in [
+            ClientError(
+                error_response={"Error": {"Code": 1, "message": "fake error"}},
+                operation_name="fake operation name",
+            ),
+            ValueError,
+        ]:
+            self.charm.unit.status = ActiveStatus()
+            _render_pgbackrest_conf_file.reset_mock()
+            _create_bucket_if_not_exists.reset_mock()
+            with self.harness.hooks_disabled():
+                self.harness.update_relation_data(
+                    self.peer_rel_id,
+                    self.charm.app.name,
+                    {"cluster_initialised": "True"},
+                )
+            _render_pgbackrest_conf_file.return_value = True
+            _create_bucket_if_not_exists.side_effect = error
+            self.charm.backup.s3_client.on.credentials_changed.emit(
+                relation=self.harness.model.get_relation(S3_PARAMETERS_RELATION, self.s3_rel_id)
+            )
+            _render_pgbackrest_conf_file.assert_called_once()
+            _create_bucket_if_not_exists.assert_called_once()
+            self.assertIsInstance(self.charm.unit.status, BlockedStatus)
+            self.assertEqual(
+                self.charm.unit.status.message, FAILED_TO_ACCESS_CREATE_BUCKET_ERROR_MESSAGE
+            )
+            _can_use_s3_repository.assert_not_called()
+            _initialise_stanza.assert_not_called()
+            _start_stop_pgbackrest_service.assert_not_called()
+
+        # Test when it's not possible to use the S3 repository due to backups from another cluster.
+        _create_bucket_if_not_exists.reset_mock()
+        _create_bucket_if_not_exists.side_effect = None
+        _can_use_s3_repository.return_value = (False, "fake validation message")
+        self.charm.backup.s3_client.on.credentials_changed.emit(
+            relation=self.harness.model.get_relation(S3_PARAMETERS_RELATION, self.s3_rel_id)
+        )
+        self.assertIsInstance(self.charm.unit.status, BlockedStatus)
+        self.assertEqual(self.charm.unit.status.message, "fake validation message")
+        _create_bucket_if_not_exists.assert_called_once()
+        _can_use_s3_repository.assert_called_once()
+        _initialise_stanza.assert_not_called()
+        _start_stop_pgbackrest_service.assert_not_called()
+
+        # Test when the stanza can be initialised and the pgBackRest service can start.
+        _can_use_s3_repository.reset_mock()
+        _can_use_s3_repository.return_value = (True, None)
+        self.charm.backup.s3_client.on.credentials_changed.emit(
+            relation=self.harness.model.get_relation(S3_PARAMETERS_RELATION, self.s3_rel_id)
+        )
+        _can_use_s3_repository.assert_called_once()
+        _initialise_stanza.assert_called_once()
+        _start_stop_pgbackrest_service.assert_called_once()
 
     def test_on_create_backup_action(self):
         pass
