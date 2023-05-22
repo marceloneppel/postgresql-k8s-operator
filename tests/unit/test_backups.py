@@ -792,8 +792,62 @@ class TestPostgreSQLBackups(unittest.TestCase):
         _update_config.assert_called_once()
         _start.assert_called_once_with("postgresql")
 
-    def test_retrieve_s3_parameters(self):
-        pass
+    @patch("charms.data_platform_libs.v0.s3.S3Requirer.get_s3_connection_info")
+    def test_retrieve_s3_parameters(self, _get_s3_connection_info):
+        # Test when there are missing S3 parameters.
+        _get_s3_connection_info.return_value = {}
+        self.assertEqual(
+            self.charm.backup._retrieve_s3_parameters(),
+            ({}, ["bucket", "access-key", "secret-key"]),
+        )
+
+        # Test when only the required parameters are provided.
+        _get_s3_connection_info.return_value = {
+            "bucket": "test-bucket",
+            "access-key": "test-access-key",
+            "secret-key": "test-secret-key",
+        }
+        self.assertEqual(
+            self.charm.backup._retrieve_s3_parameters(),
+            (
+                {
+                    "access-key": "test-access-key",
+                    "bucket": "test-bucket",
+                    "endpoint": "https://s3.amazonaws.com",
+                    "path": "/",
+                    "region": None,
+                    "s3-uri-style": "host",
+                    "secret-key": "test-secret-key",
+                },
+                [],
+            ),
+        )
+
+        # Test when all parameters are provided.
+        _get_s3_connection_info.return_value = {
+            "bucket": "test-bucket",
+            "access-key": "test-access-key",
+            "secret-key": "test-secret-key",
+            "endpoint": "https://storage.googleapis.com",
+            "path": "test-path/",
+            "region": "us-east-1",
+            "s3-uri-style": "path",
+        }
+        self.assertEqual(
+            self.charm.backup._retrieve_s3_parameters(),
+            (
+                {
+                    "access-key": "test-access-key",
+                    "bucket": "test-bucket",
+                    "endpoint": "https://storage.googleapis.com",
+                    "path": "/test-path",
+                    "region": "us-east-1",
+                    "s3-uri-style": "path",
+                    "secret-key": "test-secret-key",
+                },
+                [],
+            ),
+        )
 
     def test_start_stop_pgbackrest_service(self):
         pass
