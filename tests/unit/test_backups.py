@@ -3,10 +3,11 @@
 import datetime
 import unittest
 from typing import OrderedDict
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, PropertyMock, mock_open, patch
 
 from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import ClientError
+from jinja2 import Template
 from ops import ActiveStatus, BlockedStatus
 from ops.pebble import Change, ChangeError, ChangeID, ExecError
 from ops.testing import Harness
@@ -773,8 +774,68 @@ class TestPostgreSQLBackups(unittest.TestCase):
         self.assertEqual(self.charm.backup._pre_restore_checks(mock_event), True)
         mock_event.fail.assert_not_called()
 
-    def test_render_pgbackrest_conf_file(self):
-        pass
+    @patch("ops.model.Container.push")
+    @patch("charm.PostgreSQLBackups._retrieve_s3_parameters")
+    def test_render_pgbackrest_conf_file(self, _retrieve_s3_parameters, _push):
+        # Set up a mock for the `open` method, set returned data to postgresql.conf template.
+        with open("templates/pgbackrest.conf.j2", "r") as f:
+            mock = mock_open(read_data=f.read())
+
+        # Test when there are missing S3 parameters.
+        _retrieve_s3_parameters.return_value = [], ["bucket", "access-key", "secret-key"]
+
+        # Patch the `open` method with our mock.
+        with patch("builtins.open", mock, create=True):
+            # Call the method
+            self.charm.backup._render_pgbackrest_conf_file()
+
+        mock.assert_not_called()
+        _push.assert_not_called()
+
+        # Test when all parameters are provided.
+        _retrieve_s3_parameters.return_value = {
+            "bucket": "test-bucket",
+            "access-key": "test-access-key",
+            "secret-key": "test-secret-key",
+            "endpoint": "https://storage.googleapis.com",
+            "path": "test-path/",
+            "region": "us-east-1",
+            "s3-uri-style": "path",
+        }, []
+
+        # Get the expected content from a file.
+        with open("templates/pgbackrest.conf.j2") as file:
+            template = Template(file.read())
+        expected_content = template.render(
+            enable_tls=self.charm.is_tls_enabled and len(self.charm.peer_members_endpoints) > 0,
+            peer_endpoints=self.charm.peer_members_endpoints,
+            path="test-path/",
+            region="us-east-1",
+            endpoint="https://storage.googleapis.com",
+            bucket="test-bucket",
+            s3_uri_style="path",
+            access_key="test-access-key",
+            secret_key="test-secret-key",
+            stanza=self.charm.backup.stanza_name,
+            storage_path=self.charm._storage_path,
+            user="backup",
+        )
+
+        # Patch the `open` method with our mock.
+        with patch("builtins.open", mock, create=True):
+            # Call the method
+            self.charm.backup._render_pgbackrest_conf_file()
+
+        # Check the template is opened read-only in the call to open.
+        self.assertEqual(mock.call_args_list[0][0], ("templates/pgbackrest.conf.j2", "r"))
+
+        # Ensure the correct rendered template is sent to _render_file method.
+        _push.assert_called_once_with(
+            "/etc/pgbackrest.conf",
+            expected_content,
+            user="postgres",
+            group="postgres",
+        )
 
     @patch("ops.model.Container.start")
     @patch("charm.PostgresqlOperatorCharm.update_config")
