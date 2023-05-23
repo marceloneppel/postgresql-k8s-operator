@@ -849,8 +849,98 @@ class TestPostgreSQLBackups(unittest.TestCase):
             ),
         )
 
-    def test_start_stop_pgbackrest_service(self):
-        pass
+    @patch(
+        "charm.PostgreSQLBackups._is_primary_pgbackrest_service_running", new_callable=PropertyMock
+    )
+    @patch("charm.PostgresqlOperatorCharm.is_primary", new_callable=PropertyMock)
+    @patch("ops.model.Container.restart")
+    @patch("ops.model.Container.stop")
+    @patch("charm.PostgresqlOperatorCharm.peer_members_endpoints", new_callable=PropertyMock)
+    @patch("charm.PostgresqlOperatorCharm.is_tls_enabled", new_callable=PropertyMock)
+    @patch("charm.PostgreSQLBackups._render_pgbackrest_conf_file")
+    @patch("charm.PostgreSQLBackups._are_backup_settings_ok")
+    def test_start_stop_pgbackrest_service(
+        self,
+        _are_backup_settings_ok,
+        _render_pgbackrest_conf_file,
+        _is_tls_enabled,
+        _peer_members_endpoints,
+        _stop,
+        _restart,
+        _is_primary,
+        _is_primary_pgbackrest_service_running,
+    ):
+        # Test when S3 parameters are not ok (no operation, but returns success).
+        _are_backup_settings_ok.return_value = (False, "fake error message")
+        self.assertEqual(
+            self.charm.backup.start_stop_pgbackrest_service(),
+            True,
+        )
+        _stop.assert_not_called()
+        _restart.assert_not_called()
+
+        # Test when it was not possible to render the pgBackRest configuration file.
+        _are_backup_settings_ok.return_value = (True, None)
+        _render_pgbackrest_conf_file.return_value = False
+        self.assertEqual(
+            self.charm.backup.start_stop_pgbackrest_service(),
+            False,
+        )
+        _stop.assert_not_called()
+        _restart.assert_not_called()
+
+        # Test when TLS is not enabled (should stop the service).
+        _render_pgbackrest_conf_file.return_value = True
+        _is_tls_enabled.return_value = False
+        self.assertEqual(
+            self.charm.backup.start_stop_pgbackrest_service(),
+            True,
+        )
+        _stop.assert_called_once()
+        _restart.assert_not_called()
+
+        # Test when there are no replicas.
+        _stop.reset_mock()
+        _is_tls_enabled.return_value = True
+        _peer_members_endpoints.return_value = []
+        self.assertEqual(
+            self.charm.backup.start_stop_pgbackrest_service(),
+            True,
+        )
+        _stop.assert_called_once()
+        _restart.assert_not_called()
+
+        # Test when the service hasn't started in the primary yet.
+        _stop.reset_mock()
+        _peer_members_endpoints.return_value = ["fake-member-endpoint"]
+        _is_primary.return_value = False
+        _is_primary_pgbackrest_service_running.return_value = False
+        self.assertEqual(
+            self.charm.backup.start_stop_pgbackrest_service(),
+            False,
+        )
+        _stop.assert_not_called()
+        _restart.assert_not_called()
+
+        # Test when the service has already started in the primary.
+        _is_primary_pgbackrest_service_running.return_value = True
+        self.assertEqual(
+            self.charm.backup.start_stop_pgbackrest_service(),
+            True,
+        )
+        _stop.assert_not_called()
+        _restart.assert_called_once()
+
+        # Test when this unit is the primary.
+        _restart.reset_mock()
+        _is_primary.return_value = True
+        _is_primary_pgbackrest_service_running.return_value = False
+        self.assertEqual(
+            self.charm.backup.start_stop_pgbackrest_service(),
+            True,
+        )
+        _stop.assert_not_called()
+        _restart.assert_called_once()
 
     def test_upload_content_to_s3(self):
         pass
