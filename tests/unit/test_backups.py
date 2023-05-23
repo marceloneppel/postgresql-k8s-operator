@@ -5,6 +5,7 @@ import unittest
 from typing import OrderedDict
 from unittest.mock import MagicMock, PropertyMock, patch
 
+from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import ClientError
 from ops import ActiveStatus, BlockedStatus
 from ops.pebble import Change, ChangeError, ChangeID, ExecError
@@ -942,5 +943,55 @@ class TestPostgreSQLBackups(unittest.TestCase):
         _stop.assert_not_called()
         _restart.assert_called_once()
 
-    def test_upload_content_to_s3(self):
-        pass
+    @patch("tempfile.NamedTemporaryFile")
+    @patch("charm.PostgreSQLBackups._construct_endpoint")
+    @patch("boto3.session.Session.resource")
+    def test_upload_content_to_s3(self, _resource, _construct_endpoint, _named_temporary_file):
+        # Set some parameters.
+        content = "test-content"
+        s3_path = "test-file."
+        s3_parameters = {
+            "bucket": "test-bucket",
+            "access-key": "test-access-key",
+            "secret-key": "test-secret-key",
+            "endpoint": "https://s3.amazonaws.com",
+            "path": "/test-path",
+            "region": "us-east-1",
+        }
+
+        # Test when any exception happens.
+        upload_file = _resource.return_value.Bucket.return_value.upload_file
+        _resource.side_effect = ValueError
+        _construct_endpoint.return_value = "https://s3.us-east-1.amazonaws.com"
+        _named_temporary_file.return_value.__enter__.return_value.name = "/tmp/test-file"
+        self.assertEqual(
+            self.charm.backup._upload_content_to_s3(content, s3_path, s3_parameters),
+            False,
+        )
+        _resource.assert_called_once_with("s3", endpoint_url="https://s3.us-east-1.amazonaws.com")
+        _named_temporary_file.assert_not_called()
+        upload_file.assert_not_called()
+
+        _resource.reset_mock()
+        _resource.side_effect = None
+        upload_file.side_effect = S3UploadFailedError
+        self.assertEqual(
+            self.charm.backup._upload_content_to_s3(content, s3_path, s3_parameters),
+            False,
+        )
+        _resource.assert_called_once_with("s3", endpoint_url="https://s3.us-east-1.amazonaws.com")
+        _named_temporary_file.assert_called_once()
+        upload_file.assert_called_once_with("/tmp/test-file", "test-path/test-file.")
+
+        # Test when the upload succeeds
+        _resource.reset_mock()
+        _named_temporary_file.reset_mock()
+        upload_file.reset_mock()
+        upload_file.side_effect = None
+        self.assertEqual(
+            self.charm.backup._upload_content_to_s3(content, s3_path, s3_parameters),
+            True,
+        )
+        _resource.assert_called_once_with("s3", endpoint_url="https://s3.us-east-1.amazonaws.com")
+        _named_temporary_file.assert_called_once()
+        upload_file.assert_called_once_with("/tmp/test-file", "test-path/test-file.")
