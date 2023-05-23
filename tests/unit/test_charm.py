@@ -5,7 +5,6 @@ import unittest
 from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 from charms.postgresql_k8s.v0.postgresql import PostgreSQLUpdateUserPasswordError
-from lightkube.core.exceptions import ApiError
 from lightkube.resources.core_v1 import Endpoints, Pod, Service
 from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus, WaitingStatus
 from ops.testing import Harness
@@ -14,28 +13,7 @@ from tenacity import RetryError
 from charm import PostgresqlOperatorCharm
 from constants import PEER
 from tests.helpers import patch_network_get
-
-
-class _FakeResponse:
-    """Used to fake an httpx response during testing only."""
-
-    def __init__(self, status_code: int):
-        self.status_code = status_code
-
-    def json(self):
-        return {
-            "apiVersion": 1,
-            "code": self.status_code,
-            "message": "broken",
-            "reason": "",
-        }
-
-
-class _FakeApiError(ApiError):
-    """Used to simulate an ApiError during testing."""
-
-    def __init__(self, status_code: int = 400):
-        super().__init__(response=_FakeResponse(status_code))
+from tests.unit.helpers import _FakeApiError
 
 
 class TestCharm(unittest.TestCase):

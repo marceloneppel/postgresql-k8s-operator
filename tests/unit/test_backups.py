@@ -8,13 +8,14 @@ from unittest.mock import MagicMock, PropertyMock, mock_open, patch
 from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import ClientError
 from jinja2 import Template
-from ops import ActiveStatus, BlockedStatus
+from ops import ActiveStatus, BlockedStatus, MaintenanceStatus
 from ops.pebble import Change, ChangeError, ChangeID, ExecError
 from ops.testing import Harness
 from tenacity import RetryError, wait_fixed
 
 from charm import PostgresqlOperatorCharm
 from constants import PEER
+from tests.unit.helpers import _FakeApiError
 
 ANOTHER_CLUSTER_REPOSITORY_ERROR_MESSAGE = "the S3 repository has backups from another cluster"
 FAILED_TO_ACCESS_CREATE_BUCKET_ERROR_MESSAGE = (
@@ -27,6 +28,10 @@ S3_PARAMETERS_RELATION = "s3-parameters"
 class TestPostgreSQLBackups(unittest.TestCase):
     @patch("charm.KubernetesServicePatch", lambda x, y: None)
     def setUp(self):
+        # Mock generic sync client to avoid search to ~/.kube/config.
+        self.patcher = patch("lightkube.core.client.GenericSyncClient")
+        self.mock_k8s_client = self.patcher.start()
+
         self.harness = Harness(PostgresqlOperatorCharm)
         self.addCleanup(self.harness.cleanup)
 
@@ -373,7 +378,7 @@ class TestPostgreSQLBackups(unittest.TestCase):
             err="fake error",
             change=Change(
                 ChangeID("1"),
-                "fake king",
+                "fake kind",
                 "fake summary",
                 "fake status",
                 [],
@@ -721,8 +726,132 @@ class TestPostgreSQLBackups(unittest.TestCase):
         )
         mock_event.fail.assert_not_called()
 
-    def test_on_restore_action(self):
-        pass
+    @patch("ops.model.Container.start")
+    @patch("charm.PostgresqlOperatorCharm.update_config")
+    @patch("charm.PostgreSQLBackups._empty_data_files")
+    @patch("charm.PostgreSQLBackups._restart_database")
+    @patch("lightkube.Client.delete")
+    @patch("ops.model.Container.stop")
+    @patch("charm.PostgreSQLBackups._list_backups")
+    @patch("charm.PostgreSQLBackups._pre_restore_checks")
+    def test_on_restore_action(
+        self,
+        _pre_restore_checks,
+        _list_backups,
+        _stop,
+        _delete,
+        _restart_database,
+        _empty_data_files,
+        _update_config,
+        _start,
+    ):
+        # Test when pre restore checks fail.
+        mock_event = MagicMock()
+        _pre_restore_checks.return_value = False
+        self.charm.unit.status = ActiveStatus()
+        self.charm.backup._on_restore_action(mock_event)
+        _list_backups.assert_not_called()
+        _stop.assert_not_called()
+        _delete.assert_not_called()
+        _restart_database.assert_not_called()
+        _empty_data_files.assert_not_called()
+        _update_config.assert_not_called()
+        _start.assert_not_called()
+        mock_event.fail.assert_not_called()
+        mock_event.set_results.assert_not_called()
+        self.assertNotIsInstance(self.charm.unit.status, MaintenanceStatus)
+
+        # Test when the user provides an invalid backup id.
+        mock_event.params = {"backup-id": "2023-01-01T10:00:00Z"}
+        _pre_restore_checks.return_value = True
+        _list_backups.return_value = {"2023-01-01T09:00:00Z": self.charm.backup.stanza_name}
+        self.charm.unit.status = ActiveStatus()
+        self.charm.backup._on_restore_action(mock_event)
+        _list_backups.assert_called_once_with(show_failed=False)
+        mock_event.fail.assert_called_once()
+        _stop.assert_not_called()
+        _delete.assert_not_called()
+        _restart_database.assert_not_called()
+        _empty_data_files.assert_not_called()
+        _update_config.assert_not_called()
+        _start.assert_not_called()
+        mock_event.set_results.assert_not_called()
+        self.assertNotIsInstance(self.charm.unit.status, MaintenanceStatus)
+
+        # Test when the charm fails to stop the workload.
+        mock_event.reset_mock()
+        mock_event.params = {"backup-id": "2023-01-01T09:00:00Z"}
+        _stop.side_effect = ChangeError(
+            err="fake error",
+            change=Change(
+                ChangeID("1"),
+                "fake kind",
+                "fake summary",
+                "fake status",
+                [],
+                True,
+                "fake error",
+                datetime.datetime.now(),
+                datetime.datetime.now(),
+            ),
+        )
+        self.charm.backup._on_restore_action(mock_event)
+        _stop.assert_called_once_with("postgresql")
+        mock_event.fail.assert_called_once()
+        _delete.assert_not_called()
+        _restart_database.assert_not_called()
+        _empty_data_files.assert_not_called()
+        _update_config.assert_not_called()
+        _start.assert_not_called()
+        mock_event.set_results.assert_not_called()
+
+        # Test when the charm fails to remove the previous cluster information.
+        mock_event.reset_mock()
+        mock_event.params = {"backup-id": "2023-01-01T09:00:00Z"}
+        _stop.side_effect = None
+        _delete.side_effect = [None, _FakeApiError]
+        self.charm.backup._on_restore_action(mock_event)
+        self.assertEqual(_delete.call_count, 2)
+        mock_event.fail.assert_called_once()
+        _restart_database.assert_called_once()
+        _empty_data_files.assert_not_called()
+        _update_config.assert_not_called()
+        _start.assert_not_called()
+        mock_event.set_results.assert_not_called()
+
+        # Test when the charm fails to remove the files from the data directory.
+        mock_event.reset_mock()
+        _restart_database.reset_mock()
+        _delete.side_effect = None
+        _empty_data_files.side_effect = ExecError(
+            command="fake command".split(), exit_code=1, stdout="", stderr="fake error"
+        )
+        self.charm.backup._on_restore_action(mock_event)
+        _empty_data_files.assert_called_once()
+        mock_event.fail.assert_called_once()
+        _restart_database.assert_called_once()
+        _update_config.assert_not_called()
+        _start.assert_not_called()
+        mock_event.set_results.assert_not_called()
+
+        # Test a successful start of the restore process.
+        mock_event.reset_mock()
+        _restart_database.reset_mock()
+        _empty_data_files.side_effect = None
+        self.assertEqual(self.harness.get_relation_data(self.peer_rel_id, self.charm.app), {})
+        self.charm.backup._on_restore_action(mock_event)
+        _restart_database.assert_not_called()
+        self.assertEqual(
+            self.harness.get_relation_data(self.peer_rel_id, self.charm.app),
+            {
+                "restoring-backup": "20230101-090000F",
+                "restore-stanza": f"{self.charm.model.name}.{self.charm.cluster_name}",
+            },
+        )
+        _update_config.assert_called_once()
+        _start.assert_called_once_with("postgresql")
+        mock_event.fail.assert_not_called()
+        mock_event.set_results.assert_called_once_with({"restore-status": "restore started"})
 
     @patch("ops.model.Application.planned_units")
     @patch("charm.PostgreSQLBackups._are_backup_settings_ok")
