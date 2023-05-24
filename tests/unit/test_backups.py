@@ -3,7 +3,7 @@
 import datetime
 import unittest
 from typing import OrderedDict
-from unittest.mock import MagicMock, PropertyMock, mock_open, patch
+from unittest.mock import MagicMock, PropertyMock, call, mock_open, patch
 
 from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import ClientError
@@ -680,8 +680,149 @@ class TestPostgreSQLBackups(unittest.TestCase):
         _initialise_stanza.assert_called_once()
         _start_stop_pgbackrest_service.assert_called_once()
 
-    def test_on_create_backup_action(self):
-        pass
+    @patch("charm.PostgreSQLBackups._change_connectivity_to_database")
+    @patch("charm.PostgreSQLBackups._list_backups")
+    @patch("charm.PostgreSQLBackups._execute_command")
+    @patch("charm.PostgresqlOperatorCharm.is_primary", new_callable=PropertyMock)
+    @patch("charm.PostgreSQLBackups._upload_content_to_s3")
+    @patch("datetime.datetime")
+    @patch("ops.JujuVersion.from_environ")
+    @patch("charm.PostgreSQLBackups._retrieve_s3_parameters")
+    @patch("charm.PostgreSQLBackups._can_unit_perform_backup")
+    def test_on_create_backup_action(
+        self,
+        _can_unit_perform_backup,
+        _retrieve_s3_parameters,
+        _from_environ,
+        _datetime,
+        _upload_content_to_s3,
+        _is_primary,
+        _execute_command,
+        _list_backups,
+        _change_connectivity_to_database,
+    ):
+        # Test when the unit cannot perform a backup.
+        mock_event = MagicMock()
+        _can_unit_perform_backup.return_value = (False, "fake validation message")
+        self.charm.backup._on_create_backup_action(mock_event)
+        mock_event.fail.assert_called_once()
+        mock_event.set_results.assert_not_called()
+
+        # Test when the charm fails to upload a file to S3.
+        mock_event.reset_mock()
+        _can_unit_perform_backup.return_value = (True, None)
+        mock_s3_parameters = {
+            "bucket": "test-bucket",
+            "access-key": "test-access-key",
+            "secret-key": "test-secret-key",
+            "endpoint": "test-endpoint",
+            "path": "test-path",
+            "region": "test-region",
+        }
+        _retrieve_s3_parameters.return_value = (
+            mock_s3_parameters,
+            [],
+        )
+        _datetime.now.return_value.strftime.return_value = "2023-01-01T09:00:00Z"
+        _from_environ.return_value = "test-juju-version"
+        _upload_content_to_s3.return_value = False
+        expected_metadata = f"""Date Backup Requested: 2023-01-01T09:00:00Z
+Model Name: {self.charm.model.name}
+Application Name: {self.charm.model.app.name}
+Unit Name: {self.charm.unit.name}
+Juju Version: test-juju-version
+"""
+        self.charm.backup._on_create_backup_action(mock_event)
+        _upload_content_to_s3.assert_called_once_with(
+            expected_metadata,
+            f"test-path/backup/{self.charm.model.name}.{self.charm.cluster_name}/latest",
+            mock_s3_parameters,
+        )
+        mock_event.fail.assert_called_once()
+        mock_event.set_results.assert_not_called()
+
+        # Test when the backup fails.
+        mock_event.reset_mock()
+        _upload_content_to_s3.return_value = True
+        _is_primary.return_value = True
+        _execute_command.side_effect = ExecError(
+            command="fake command".split(), exit_code=1, stdout="", stderr="fake error"
+        )
+        self.charm.backup._on_create_backup_action(mock_event)
+        mock_event.fail.assert_called_once()
+        mock_event.set_results.assert_not_called()
+
+        # Test when the backup succeeds but the charm fails to upload the backup logs.
+        mock_event.reset_mock()
+        _upload_content_to_s3.reset_mock()
+        _upload_content_to_s3.side_effect = [True, False]
+        _execute_command.side_effect = None
+        _execute_command.return_value = "fake stdout", "fake stderr"
+        _list_backups.return_value = {"2023-01-01T09:00:00Z": self.charm.backup.stanza_name}
+        self.charm.backup._on_create_backup_action(mock_event)
+        _upload_content_to_s3.assert_has_calls(
+            [
+                call(
+                    expected_metadata,
+                    f"test-path/backup/{self.charm.model.name}.{self.charm.cluster_name}/latest",
+                    mock_s3_parameters,
+                ),
+                call(
+                    "Stdout:\nfake stdout\n\nStderr:\nfake stderr\n",
+                    f"test-path/backup/{self.charm.model.name}.{self.charm.cluster_name}/2023-01-01T09:00:00Z/backup.log",
+                    mock_s3_parameters,
+                ),
+            ]
+        )
+        mock_event.fail.assert_called_once()
+        mock_event.set_results.assert_not_called()
+
+        # Test when the backup succeeds (including the upload of the backup logs).
+        mock_event.reset_mock()
+        _upload_content_to_s3.reset_mock()
+        _upload_content_to_s3.side_effect = None
+        _upload_content_to_s3.return_value = True
+        self.charm.backup._on_create_backup_action(mock_event)
+        _upload_content_to_s3.assert_has_calls(
+            [
+                call(
+                    expected_metadata,
+                    f"test-path/backup/{self.charm.model.name}.{self.charm.cluster_name}/latest",
+                    mock_s3_parameters,
+                ),
+                call(
+                    "Stdout:\nfake stdout\n\nStderr:\nfake stderr\n",
+                    f"test-path/backup/{self.charm.model.name}.{self.charm.cluster_name}/2023-01-01T09:00:00Z/backup.log",
+                    mock_s3_parameters,
+                ),
+            ]
+        )
+        _change_connectivity_to_database.assert_not_called()
+        mock_event.fail.assert_not_called()
+        mock_event.set_results.assert_called_once()
+
+        # Test when this unit is a replica (the connectivity to the database should be changed).
+        mock_event.reset_mock()
+        _upload_content_to_s3.reset_mock()
+        _is_primary.return_value = False
+        self.charm.backup._on_create_backup_action(mock_event)
+        _upload_content_to_s3.assert_has_calls(
+            [
+                call(
+                    expected_metadata,
+                    f"test-path/backup/{self.charm.model.name}.{self.charm.cluster_name}/latest",
+                    mock_s3_parameters,
+                ),
+                call(
+                    "Stdout:\nfake stdout\n\nStderr:\nfake stderr\n",
+                    f"test-path/backup/{self.charm.model.name}.{self.charm.cluster_name}/2023-01-01T09:00:00Z/backup.log",
+                    mock_s3_parameters,
+                ),
+            ]
+        )
+        self.assertEqual(_change_connectivity_to_database.call_count, 2)
+        mock_event.fail.assert_not_called()
+        mock_event.set_results.assert_called_once_with({"backup-status": "backup created"})
 
     @patch("charm.PostgreSQLBackups._generate_backup_list_output")
     @patch("charm.PostgreSQLBackups._are_backup_settings_ok")
