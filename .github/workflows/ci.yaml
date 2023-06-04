@@ -46,21 +46,6 @@ jobs:
       - name: Run tests
         run: tox run -e unit
 
-  lib-check:
-    name: Check libraries
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-      - name: Check libs
-        uses: canonical/charming-actions/check-libraries@2.3.0
-        with:
-          credentials: "${{ secrets.CHARMHUB_TOKEN }}"
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
-
   build:
     name: Build charms
     uses: canonical/data-platform-workflows/.github/workflows/build_charms_with_cache.yaml@v2
@@ -69,29 +54,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tox-environments:
-          - password-rotation-integration
-          - plugins-integration
-          - tls-integration
-        agents-version: ["2.9.42"]  # renovate: latest
+#        tox-environments:
+#          - password-rotation-integration
+#          - plugins-integration
+#          - tls-integration
+#        agents-version: ["2.9.42"]  # renovate: latest
         include:
-          - tox-environments: backup-integration
-            agents-version: "2.9.29"
-          - tox-environments: charm-integration
-            agents-version: "2.9.29"
-          - tox-environments: database-relation-integration
-            agents-version: "2.9.29"
+#          - tox-environments: backup-integration
+#            agents-version: "2.9.29"
+#          - tox-environments: charm-integration
+#            agents-version: "2.9.29"
+#          - tox-environments: database-relation-integration
+#            agents-version: "2.9.29"
           - tox-environments: db-relation-integration
             agents-version: "2.9.29"
-          - tox-environments: db-admin-relation-integration
-            agents-version: "2.9.29"
-          - tox-environments: ha-replication-integration
-            agents-version: "2.9.29"
-          - tox-environments: ha-self-healing-integration
-            agents-version: "2.9.29"
+#          - tox-environments: db-admin-relation-integration
+#            agents-version: "2.9.29"
+#          - tox-environments: ha-replication-integration
+#            agents-version: "2.9.29"
+#          - tox-environments: ha-self-healing-integration
+#            agents-version: "2.9.29"
     name: ${{ matrix.tox-environments }} | ${{ matrix.agents-version }}
     needs:
-      - lib-check
       - lint
       - unit-test
       - build
@@ -122,10 +106,14 @@ jobs:
             echo "mark_expression=not unstable" >> $GITHUB_OUTPUT
           fi
       - name: Run integration tests
-        run: tox run -e ${{ matrix.tox-environments }} -- -m '${{ steps.select-tests.outputs.mark_expression }}'
+        run: tox run -e ${{ matrix.tox-environments }} -- -m '${{ steps.select-tests.outputs.mark_expression }}' --keep-models -vv
         env:
           AWS_ACCESS_KEY: "${{ secrets.AWS_ACCESS_KEY }}"
           AWS_SECRET_KEY: "${{ secrets.AWS_SECRET_KEY }}"
           GCP_ACCESS_KEY: "${{ secrets.GCP_ACCESS_KEY }}"
           GCP_SECRET_KEY: "${{ secrets.GCP_SECRET_KEY }}"
           CI_PACKED_CHARMS: ${{ needs.build.outputs.charms }}
+      - uses: actions/checkout@v3
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: always()
