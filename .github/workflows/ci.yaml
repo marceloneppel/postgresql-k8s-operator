@@ -131,6 +131,9 @@ jobs:
             echo Skipping unstable tests
             echo "mark_expression=and not unstable" >> $GITHUB_OUTPUT
           fi
+      - uses: actions/checkout@v3
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
       - name: Run integration tests
         run: tox run -e ${{ matrix.tox-environments }}-${{ env.libjuju }} -- -m 'not not${{ env.libjuju }} ${{ steps.select-tests.outputs.mark_expression }}' --keep-models
         env:
