@@ -22,9 +22,9 @@ async def cloud_configs(ops_test: OpsTest) -> None:
     configs = {
         AWS: {
             "endpoint": "https://s3.amazonaws.com",
-            "bucket": "data-charms-testing",
+            "bucket": "canonical-postgres",
             "path": f"/postgresql-k8s/{uuid.uuid1()}",
-            "region": "us-east-1",
+            "region": "us-east-2",
         },
         GCP: {
             "endpoint": "https://storage.googleapis.com",

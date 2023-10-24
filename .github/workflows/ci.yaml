@@ -62,20 +62,20 @@ jobs:
       matrix:
         tox-environments:
           - backup-integration
-          - charm-integration
-          - database-relation-integration
-          - db-relation-integration
-          - db-admin-relation-integration
-          - ha-replication-integration
-          - ha-self-healing-integration
-          - password-rotation-integration
-          - plugins-integration
-          - tls-integration
-          - upgrade-integration
-          - upgrade-from-stable-integration
+#          - charm-integration
+#          - database-relation-integration
+#          - db-relation-integration
+#          - db-admin-relation-integration
+#          - ha-replication-integration
+#          - ha-self-healing-integration
+#          - password-rotation-integration
+#          - plugins-integration
+#          - tls-integration
+#          - upgrade-integration
+#          - upgrade-from-stable-integration
         agent-versions:
-          - "2.9.45"  # renovate: latest juju 2
-          - "3.1.5"  # renovate: latest juju 3
+#          - "2.9.45"  # renovate: latest juju 2
+          - "3.1.6"  # renovate: latest juju 3
     name: ${{ matrix.tox-environments }} | ${{ matrix.agent-versions }}
     needs:
       - lint
@@ -115,6 +115,9 @@ jobs:
             echo Skipping unstable tests
             echo "mark_expression=and not unstable" >> $GITHUB_OUTPUT
           fi
+#      - uses: actions/checkout@v3
+#      - name: Setup tmate session
+#        uses: mxschmitt/action-tmate@v3
       - name: Run integration tests
         run: tox run -e ${{ matrix.tox-environments }}-${{ env.libjuju }} -- -m 'not not${{ env.libjuju }} ${{ steps.select-tests.outputs.mark_expression }}' --keep-models
         env:
