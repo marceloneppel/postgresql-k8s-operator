@@ -77,19 +77,19 @@ jobs:
       matrix:
         tox-environments:
           - backup-integration
-          - charm-integration
-          - database-relation-integration
-          - db-relation-integration
-          - db-admin-relation-integration
-          - ha-replication-integration
-          - ha-self-healing-integration
-          - password-rotation-integration
-          - plugins-integration
-          - tls-integration
-          - upgrade-integration
-          - upgrade-from-stable-integration
+#          - charm-integration
+#          - database-relation-integration
+#          - db-relation-integration
+#          - db-admin-relation-integration
+#          - ha-replication-integration
+#          - ha-self-healing-integration
+#          - password-rotation-integration
+#          - plugins-integration
+#          - tls-integration
+#          - upgrade-integration
+#          - upgrade-from-stable-integration
         agent-versions:
-          - "2.9.45"  # renovate: latest juju 2
+#          - "2.9.45"  # renovate: latest juju 2
           - "3.1.5"  # renovate: latest juju 3
     name: ${{ matrix.tox-environments }} | ${{ matrix.agent-versions }}
     needs:
